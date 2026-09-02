@@ -209,6 +209,7 @@ export class ShadowRunner {
         extensions: base.extensions.filter((extension) => !isSelfExtension(extension.resolvedPath)),
       }),
     });
+    await resourceLoader.reload();
     const reportTool = createReportTool((content) => {
       if (state.reported || controller.signal.aborted) return;
       state.reported = true;
