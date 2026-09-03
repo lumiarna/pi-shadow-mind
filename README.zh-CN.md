@@ -69,7 +69,7 @@ tools: [read, grep]
 
 每个 Shadow 可以通过 `trigger` 选择一种或两种激活方式。默认值是 `[heartbeat]`：主 Agent 的一次 `turn_end` 只有在该轮至少完成过一个工具调用时，扩展才进行全局 heartbeat 概率判断，符合条件的 Shadow 再按照各自的 `activation_probability` 独立抽选。纯文本对话轮次不会触发 heartbeat。
 
-使用 `trigger: [final_response]` 可以进行完成后审查。它在主 Agent 发出最终文字并完全 settled 后激活，不受 heartbeat 和 `activation_probability` 影响，检查结果仍通过正常的 `shadow-report` follow-up 流程返回。`trigger: [heartbeat, final_response]` 会同时启用两种模式。`max_parallel_shadows` 仍然限制并发数；超出并发槽位的最终回复检查会排队，而不会被跳过。
+使用 `trigger: [final_response]` 可以进行完成后审查。它在主 Agent 发出最终文字并完全 settled 后激活，不受 heartbeat 和 `activation_probability` 影响。同一最终回复的全部检查结束后，发现会合并为一次 `shadow-report` follow-up，较慢的同批检查不会介入已经修订的回复。`trigger: [heartbeat, final_response]` 会同时启用两种模式。`max_parallel_shadows` 仍然限制并发数；超出并发槽位的最终回复检查会排队，而不会被跳过。
 
 每次激活都会创建一个全新的临时 Session。它继承主 Agent 原封不动的 system prompt，但只接收净化后的文本轨迹：思考内容会被移除，工具调用后仅保留简洁、确定性的结果概述。
 

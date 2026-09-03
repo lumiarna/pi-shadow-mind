@@ -72,7 +72,7 @@ This Shadow is read-only. It reviews the implementation in parallel and reports 
 
 Each Shadow chooses one or both activation triggers with `trigger`. The default is `[heartbeat]`: after a main-agent `turn_end` that completed at least one tool call, the extension evaluates the global heartbeat probability, then eligible Shadows roll independently using `activation_probability`. Pure text-only conversation turns are skipped.
 
-Use `trigger: [final_response]` for completion review. It activates after the main agent has emitted its final text, bypasses both heartbeat and activation probability, and sends findings back through the normal `shadow-report` follow-up flow. `trigger: [heartbeat, final_response]` enables both modes. `max_parallel_shadows` remains the concurrency limit; excess final-response checks are queued rather than skipped.
+Use `trigger: [final_response]` for completion review. It activates after the main agent has emitted its final text and bypasses both heartbeat and activation probability. All checks for that final response finish before their findings are sent together through one `shadow-report` follow-up, so a slow sibling cannot leak into a revised answer. `trigger: [heartbeat, final_response]` enables both modes. `max_parallel_shadows` remains the concurrency limit; excess final-response checks are queued rather than skipped.
 
 Each activation starts a fresh temporary session. It inherits the main agent's unchanged system prompt but receives only a sanitized plain-text trajectory: assistant thinking is removed, while tool calls retain compact, deterministic result summaries.
 

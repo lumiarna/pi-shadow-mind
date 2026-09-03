@@ -5,7 +5,7 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShadowMindRuntime } from "../src/runtime.js";
 import type { ShadowRunResult } from "../src/shadow-runner.js";
-import type { ShadowDefinition } from "../src/types.js";
+import type { RegistrySnapshot, ShadowDefinition } from "../src/types.js";
 import { zeroUsage, type ShadowUsage } from "../src/usage.js";
 
 type EventHandler = (event: unknown, context: ExtensionContext) => unknown;
@@ -18,8 +18,11 @@ interface RuntimeInternals {
   usageStore: {
     add: (usage: ShadowUsage) => Promise<void>;
   };
+  completionReview: {
+    schedule: (...args: unknown[]) => boolean;
+  };
+  refresh: (ctx: ExtensionContext) => Promise<RegistrySnapshot>;
   registerEvents: () => void;
-  onFinalResponse: (ctx: ExtensionContext) => Promise<void>;
   handleRunEnd: (
     runId: string,
     shadow: ShadowDefinition,
@@ -44,18 +47,23 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+function createRuntimeHarness() {
+  const handlers = new Map<string, EventHandler>();
+  const runtime = new ShadowMindRuntime({
+    on: (name: string, handler: EventHandler) => {
+      handlers.set(name, handler);
+    },
+  } as unknown as ExtensionAPI);
+  const internals = runtime as unknown as RuntimeInternals;
+  return { handlers, internals };
+}
+
 describe("ShadowMindRuntime session lifecycle", () => {
   it.each(["reload", "new", "resume", "fork"])(
     "bounds %s session shutdown and detaches an unsettled old run",
     async (reason) => {
       vi.useFakeTimers();
-      const handlers = new Map<string, EventHandler>();
-      const runtime = new ShadowMindRuntime({
-        on: (name: string, handler: EventHandler) => {
-          handlers.set(name, handler);
-        },
-      } as unknown as ExtensionAPI);
-      const internals = runtime as unknown as RuntimeInternals;
+      const { handlers, internals } = createRuntimeHarness();
       internals.active.set("old-run", { shadow, epoch: 0 });
       internals.registerEvents();
 
@@ -80,14 +88,11 @@ describe("ShadowMindRuntime session lifecycle", () => {
   );
 
   it("runs final-response scheduling only after final assistant text", async () => {
-    const handlers = new Map<string, EventHandler>();
-    const runtime = new ShadowMindRuntime({
-      on: (name: string, handler: EventHandler) => {
-        handlers.set(name, handler);
-      },
-    } as unknown as ExtensionAPI);
-    const internals = runtime as unknown as RuntimeInternals;
-    internals.onFinalResponse = vi.fn().mockResolvedValue(undefined);
+    const { handlers, internals } = createRuntimeHarness();
+    internals.refresh = vi.fn().mockResolvedValue({
+      shadows: [],
+      diagnostics: [],
+    });
     internals.registerEvents();
     const agentEnd = handlers.get("agent_end");
     const agentSettled = handlers.get("agent_settled");
@@ -102,7 +107,7 @@ describe("ShadowMindRuntime session lifecycle", () => {
       context,
     );
     await agentSettled!({}, context);
-    expect(internals.onFinalResponse).not.toHaveBeenCalled();
+    expect(internals.refresh).not.toHaveBeenCalled();
 
     await agentEnd!(
       {
@@ -112,9 +117,41 @@ describe("ShadowMindRuntime session lifecycle", () => {
       },
       context,
     );
-    expect(internals.onFinalResponse).not.toHaveBeenCalled();
+    expect(internals.refresh).not.toHaveBeenCalled();
     await agentSettled!({}, context);
-    expect(internals.onFinalResponse).toHaveBeenCalledOnce();
+    expect(internals.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("abandons a final-review start superseded by new input during refresh", async () => {
+    const { handlers, internals } = createRuntimeHarness();
+    let finishRefresh: ((snapshot: RegistrySnapshot) => void) | undefined;
+    internals.refresh = vi.fn(
+      () =>
+        new Promise<RegistrySnapshot>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const schedule = vi.spyOn(internals.completionReview, "schedule");
+    internals.registerEvents();
+    const context = {} as ExtensionContext;
+
+    await handlers.get("agent_end")!(
+      {
+        messages: [
+          { role: "assistant", content: [{ type: "text", text: "Done." }] },
+        ],
+      },
+      context,
+    );
+    const pending = handlers.get("agent_settled")!(
+      {},
+      context,
+    ) as Promise<void>;
+    handlers.get("input")!({ source: "interactive" }, context);
+    finishRefresh!({ shadows: [], diagnostics: [] });
+    await pending;
+
+    expect(schedule).not.toHaveBeenCalled();
   });
 
   it("persists a stale run without adding it to the new session quota", async () => {

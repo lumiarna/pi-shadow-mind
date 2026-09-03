@@ -340,9 +340,11 @@ Main 在会话中切换模型后，后续 heartbeat 直接依据新模型重新�
 
 配置了 `final_response` 的 Shadow 在 Main 发出非空最终文字，并进入 `agent_settled` 状态后参与调度。该模式仍应用 `enabled` 和 `active_for_models`，但绕过 `heartbeat_probability` 与 `activation_probability`，所有匹配项都必须获得一次运行机会。
 
-最终回复检查使用当时的完整净化轨迹快照。`max_parallel_shadows` 仍是硬并发上限；没有空闲槽位或同一 Shadow 正在运行时，检查进入专用队列，槽位释放后继续执行。新用户输入或 Session 关闭会清空旧 epoch 的队列，防止过期结果介入新任务。
+最终回复检查使用当时的完整净化轨迹快照。`max_parallel_shadows` 仍是硬并发上限；没有空闲槽位或同一 Shadow 正在运行时，检查进入专用队列，槽位释放后继续执行。旧 epoch 的运行释放槽位时同样继续泵送当前队列，避免跨 epoch 的异步收尾把检查永久卡住。
 
-检查结果沿用普通 `shadow-report` 的 steer/follow-up 机制。因此 Main 根据报告修正并再次给出最终回复后，可以再次触发完成检查；Shadow 没有发现时保持沉默，循环自然结束。
+每次最终回复检查拥有独立、递增的 review generation。独立的 completion-review 协调器统一拥有 generation、等待队列、运行完成计数和报告聚合，Runtime 只转发宿主生命周期事件与 Shadow 启停通知。同一 generation 的报告先暂存，所有匹配 Shadow 都进入终态后才合并为一次 `shadow-report`；因此较慢的同批检查不会在 Main 已开始修订后单独 steer。新的最终回复、新用户输入、其他报告触发的修订或 Session 关闭都会使旧 generation 失效，并清空尚未启动的项目；仍在收尾的旧运行只能记录 lifetime usage，不能再投递报告。异步刷新配置和 Registry 时还会同时校验启动请求与 epoch，防止等待 I/O 的旧最终回复在新任务中恢复调度。
+
+检查结果沿用普通 `shadow-report` 的 steer/follow-up 机制。因此 Main 根据聚合报告修正并再次给出最终回复后，可以再次触发新一代完成检查；Shadow 没有发现时保持沉默，循环自然结束。
 
 ## 6. Shadow 的输出与介入
 
@@ -362,7 +364,7 @@ Shadow 返回
     └── 丢弃旧结果
 ```
 
-最终回复不会立即终止正在运行的 Shadow。迟到结果仍可在下一条用户消息到来前触发补充回复。
+Heartbeat Shadow 不会因为 Main 给出最终回复而立即终止，迟到结果仍可在下一条用户消息到来前触发补充回复。Final-response Shadow 则按 review generation 聚合，只有整批检查结束后才允许触发一次补充回复。
 
 每个用户任务拥有递增的 `epoch`：
 

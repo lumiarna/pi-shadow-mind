@@ -7,9 +7,12 @@ import {
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { Model } from "@earendil-works/pi-ai";
+import {
+  CompletionReview,
+  type CompletionReviewRun,
+} from "./completion-review.js";
 import { ConfigStore } from "./config.js";
 import { EntityStore } from "./entity-store.js";
-import { FinalResponseQueue } from "./final-response-queue.js";
 import { registerManagementTools } from "./management-tools.js";
 import { ShadowRegistry } from "./registry.js";
 import { ReportBatcher, formatReportBatch } from "./report-batcher.js";
@@ -27,7 +30,12 @@ import {
   type ShadowRunResult,
 } from "./shadow-runner.js";
 import { waitForSettled } from "./shutdown-drain.js";
-import type { RuntimeEvent, ShadowDefinition, ShadowReport } from "./types.js";
+import type {
+  RegistrySnapshot,
+  RuntimeEvent,
+  ShadowDefinition,
+  ShadowReport,
+} from "./types.js";
 import { UsageStore } from "./usage-store.js";
 import {
   addUsage,
@@ -42,15 +50,25 @@ import {
 const SESSION_TEARDOWN_TIMEOUT_MS = 1_000;
 
 type SessionContext = ReturnType<typeof buildSessionContext>;
-interface PendingFinalRun {
-  epoch: number;
-  shadowId: string;
+interface ShadowLaunch {
   ctx: ExtensionContext;
   shadow: ShadowDefinition;
   mainModel: Model<any>;
   fullModelId: string;
   context: SessionContext;
   availableTools: Set<string>;
+  epoch?: number;
+  completionReview?: CompletionReviewRun;
+}
+interface ActiveRun {
+  shadow: ShadowDefinition;
+  epoch: number;
+  completionReview?: CompletionReviewRun;
+}
+
+interface PendingFinalRun extends Omit<ShadowLaunch, "completionReview"> {
+  epoch: number;
+  shadowId: string;
 }
 
 export class ShadowMindRuntime {
@@ -63,28 +81,17 @@ export class ShadowMindRuntime {
   );
   private readonly runner = new ShadowRunner();
   private readonly usageStore = new UsageStore(this.agentDir);
-  private readonly active = new Map<
-    string,
-    { shadow: ShadowDefinition; epoch: number }
-  >();
-  private readonly finalResponseQueue = new FinalResponseQueue<PendingFinalRun>(
-    {
-      currentEpoch: () => this.epoch,
-      maxParallel: () => this.configStore.current.maxParallelShadows,
-      activeCount: () => this.active.size,
-      activeShadowIds: () =>
-        new Set([...this.active.values()].map(({ shadow }) => shadow.id)),
-      launch: (pending) =>
-        this.launchShadow(
-          pending.ctx,
-          pending.shadow,
-          pending.mainModel,
-          pending.fullModelId,
-          pending.context,
-          pending.availableTools,
-        ),
-    },
-  );
+  private readonly active = new Map<string, ActiveRun>();
+  private readonly completionReview = new CompletionReview<PendingFinalRun>({
+    currentEpoch: () => this.epoch,
+    maxParallel: () => this.configStore.current.maxParallelShadows,
+    activeCount: () => this.active.size,
+    activeShadowIds: () =>
+      new Set([...this.active.values()].map(({ shadow }) => shadow.id)),
+    launch: (pending, review) =>
+      this.launchShadow({ ...pending, completionReview: review }),
+    deliver: (reports) => void this.deliverReports(reports),
+  });
   private readonly recentEvents: RuntimeEvent[] = [];
   private readonly recentRuns: Array<{
     shadowName: string;
@@ -107,7 +114,10 @@ export class ShadowMindRuntime {
   constructor(private readonly pi: ExtensionAPI) {
     this.batcher = new ReportBatcher(
       this.configStore.current.resultBatchWindowMs,
-      (reports) => this.deliverReports(reports),
+      (reports) => {
+        this.completionReview.invalidate();
+        void this.deliverReports(reports);
+      },
     );
   }
 
@@ -263,7 +273,7 @@ export class ShadowMindRuntime {
   }
 
   private async onHeartbeat(ctx: ExtensionContext): Promise<void> {
-    await this.refresh(ctx);
+    const snapshot = await this.refresh(ctx);
     if (this.paused || !ctx.model) {
       this.record("heartbeat-skipped", {
         reason: this.paused ? "paused" : "no-model",
@@ -271,7 +281,6 @@ export class ShadowMindRuntime {
       });
       return;
     }
-    const snapshot = await this.registry.load();
     const fullModelId = `${ctx.model.provider}/${ctx.model.id}`;
     const decision = decideHeartbeat({
       heartbeatProbability: this.configStore.current.heartbeatProbability,
@@ -311,26 +320,31 @@ export class ShadowMindRuntime {
       this.pi.getAllTools().map((tool) => tool.name),
     );
     for (const { shadow } of decision.activated) {
-      this.launchShadow(
+      this.launchShadow({
         ctx,
         shadow,
-        ctx.model,
+        mainModel: ctx.model,
         fullModelId,
         context,
         availableTools,
-      );
+      });
     }
   }
 
   private async onFinalResponse(ctx: ExtensionContext): Promise<void> {
-    await this.refresh(ctx);
+    const request = this.completionReview.begin(this.epoch);
+    const snapshot = await this.refresh(ctx);
+    if (!this.completionReview.isCurrent(request)) {
+      this.record("final-response-skipped", { reason: "superseded" });
+      return;
+    }
     if (this.paused || !ctx.model) {
+      this.completionReview.cancel(request);
       this.record("final-response-skipped", {
         reason: this.paused ? "paused" : "no-model",
       });
       return;
     }
-    const snapshot = await this.registry.load();
     const mainModel = ctx.model;
     const fullModelId = `${mainModel.provider}/${mainModel.id}`;
     const decision = decideFinalResponse({
@@ -347,7 +361,10 @@ export class ShadowMindRuntime {
         ? { runningExcluded: decision.runningExcluded }
         : {}),
     });
-    if (!decision.activated.length) return;
+    if (!decision.activated.length) {
+      this.completionReview.schedule(request, []);
+      return;
+    }
 
     const context = buildSessionContext(
       ctx.sessionManager.getEntries(),
@@ -356,9 +373,10 @@ export class ShadowMindRuntime {
     const availableTools = new Set(
       this.pi.getAllTools().map((tool) => tool.name),
     );
-    this.finalResponseQueue.enqueue(
+    this.completionReview.schedule(
+      request,
       decision.activated.map(({ shadow }) => ({
-        epoch: this.epoch,
+        epoch: request.epoch,
         shadowId: shadow.id,
         ctx,
         shadow,
@@ -370,18 +388,22 @@ export class ShadowMindRuntime {
     );
   }
 
-  private launchShadow(
-    ctx: ExtensionContext,
-    shadow: ShadowDefinition,
-    mainModel: Model<any>,
-    fullModelId: string,
-    context: SessionContext,
-    availableTools: Set<string>,
-  ): void {
+  private launchShadow(options: ShadowLaunch): void {
+    const {
+      ctx,
+      shadow,
+      mainModel,
+      fullModelId,
+      context,
+      availableTools,
+      completionReview,
+    } = options;
     const runId = randomUUID();
-    const runEpoch = this.epoch;
+    const runEpoch = options.epoch ?? this.epoch;
     const { tools, missing } = resolveShadowTools(shadow.tools, availableTools);
-    this.active.set(runId, { shadow, epoch: runEpoch });
+    const activeRun: ActiveRun = { shadow, epoch: runEpoch };
+    if (completionReview) activeRun.completionReview = completionReview;
+    this.active.set(runId, activeRun);
     this.record("run-start", {
       runId,
       shadowId: shadow.id,
@@ -401,7 +423,7 @@ export class ShadowMindRuntime {
         cwd: ctx.cwd,
         agentDir: this.agentDir,
         mainSystemPrompt: ctx.getSystemPrompt(),
-        // SAFETY: buildSessionContext returns Pi message objects; the runner treats them as read-only generic records.
+        // SAFETY: buildSessionContext returns Pi messages; ShadowRunner treats them as read-only records.
         messages: context.messages as unknown as Record<string, unknown>[],
         mainModel,
         tools,
@@ -410,18 +432,23 @@ export class ShadowMindRuntime {
           ctx.modelRegistry.hasConfiguredAuth(model) ||
           ctx.modelRegistry.isUsingOAuth(model),
         mainThinkingLevel: ctx.thinkingLevel,
-        onReport: (report) => this.acceptReport(report),
+        onReport: (report) => {
+          if (completionReview) completionReview.accept(report);
+          else this.acceptReport(report);
+        },
       })
       .then((result) => this.handleRunEnd(runId, shadow, result))
       .catch((error) => {
+        const activeRun = this.active.get(runId);
         this.active.delete(runId);
+        this.completionReview.slotAvailable();
+        this.completionReview.complete(activeRun?.completionReview);
         this.record("run-end", {
           runId,
           shadowId: shadow.id,
           reason: "error",
           error: error instanceof Error ? error.message : String(error),
         });
-        this.finalResponseQueue.slotAvailable();
       });
   }
 
@@ -432,8 +459,12 @@ export class ShadowMindRuntime {
   ): void {
     const activeRun = this.active.get(runId);
     this.active.delete(runId);
+    this.completionReview.slotAvailable();
     const persisted = this.usageStore.add(result.usage);
-    if (activeRun?.epoch !== this.epoch) return;
+    if (activeRun?.epoch !== this.epoch) {
+      this.completionReview.complete(activeRun?.completionReview);
+      return;
+    }
     this.sessionUsage = addUsage(this.sessionUsage, result.usage);
     this.recentRuns.push({
       shadowName: shadow.name,
@@ -444,7 +475,7 @@ export class ShadowMindRuntime {
     this.record("run-end", { runId, shadowId: shadow.id, ...result });
     if (this.latestContext && this.sessionLifetime.isActive)
       this.updateStatus(this.latestContext);
-    this.finalResponseQueue.slotAvailable();
+    this.completionReview.complete(activeRun.completionReview);
     void persisted.then(() => {
       if (this.latestContext && this.sessionLifetime.isActive)
         this.updateStatus(this.latestContext);
@@ -456,7 +487,9 @@ export class ShadowMindRuntime {
     this.batcher.add(report);
   }
 
-  private async deliverReports(reports: ShadowReport[]): Promise<void> {
+  private async deliverReports(
+    reports: readonly ShadowReport[],
+  ): Promise<void> {
     const current = reports.filter((report) => report.epoch === this.epoch);
     if (!current.length) return;
     const content = formatReportBatch(current);
@@ -483,7 +516,7 @@ export class ShadowMindRuntime {
     });
   }
 
-  private async refresh(ctx: ExtensionContext): Promise<void> {
+  private async refresh(ctx: ExtensionContext): Promise<RegistrySnapshot> {
     const config = await this.configStore.reload();
     const registry = await this.registry.load();
     this.batcher.setWindow(config.config.resultBatchWindowMs);
@@ -495,11 +528,12 @@ export class ShadowMindRuntime {
       ),
     ];
     this.updateStatus(ctx);
+    return registry;
   }
 
   private abortAll(reason: string): void {
     this.runner.abortAll();
-    this.finalResponseQueue.clear();
+    this.completionReview.invalidate();
     this.batcher.clear();
     this.record("runs-aborted", { reason, count: this.active.size });
   }
