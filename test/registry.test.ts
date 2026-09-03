@@ -3,20 +3,48 @@ import { parseShadowMarkdown } from "../src/registry.js";
 
 describe("parseShadowMarkdown", () => {
   it("applies shadow defaults", () => {
-    const shadow = parseShadowMarkdown("---\nname: Fact checker\n---\nCheck claims against the project.", "C:/tmp/facts.md");
+    const shadow = parseShadowMarkdown(
+      "---\nname: Fact checker\n---\nCheck claims against the project.",
+      "C:/tmp/facts.md",
+    );
     expect(shadow).toMatchObject({
       id: "facts",
       name: "Fact checker",
       enabled: true,
       debug: false,
       activationProbability: 0.3,
+      trigger: ["heartbeat"],
       activeForModels: ["*"],
       tools: [],
     });
   });
 
+  it("accepts one or multiple activation triggers", () => {
+    const single = parseShadowMarkdown(
+      "---\nid: final-check\ntrigger: final_response\n---\nReview completion.",
+      "C:/tmp/final.md",
+    );
+    const multiple = parseShadowMarkdown(
+      "---\nid: both\ntrigger: [heartbeat, final_response]\n---\nReview progress.",
+      "C:/tmp/both.md",
+    );
+    expect(single.trigger).toEqual(["final_response"]);
+    expect(multiple.trigger).toEqual(["heartbeat", "final_response"]);
+  });
+
+  it("rejects unknown activation triggers", () => {
+    expect(() =>
+      parseShadowMarkdown(
+        "---\nid: invalid\ntrigger: manual\n---\nReview.",
+        "C:/tmp/invalid.md",
+      ),
+    ).toThrow(/invalid trigger/);
+  });
+
   it("rejects an empty prompt", () => {
-    expect(() => parseShadowMarkdown("---\nid: empty\n---\n", "C:/tmp/empty.md")).toThrow(/empty/);
+    expect(() =>
+      parseShadowMarkdown("---\nid: empty\n---\n", "C:/tmp/empty.md"),
+    ).toThrow(/empty/);
   });
 
   it("accepts off as a thinking level", () => {

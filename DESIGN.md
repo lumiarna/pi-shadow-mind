@@ -4,7 +4,7 @@
 
 Shadow Mind 是一个运行在 Pi 主 Agent 旁边的通用并行认知运行时。
 
-主 Agent 继续正常推理和执行任务；插件以 heartbeat 随机唤醒多个 Shadow Mind，让它们沿各自的职责独立观察或推进任务。Shadow 既可以检查 Main，也可以承担文档维护等并行工作，并在有结果需要同步时向主 Agent 注入消息。
+主 Agent 继续正常推理和执行任务；插件可以通过 heartbeat 随机唤醒多个 Shadow Mind，也可以在主 Agent 完成最终回复后确定性唤醒指定 Shadow。它们沿各自的职责独立观察或推进任务，在有结果需要同步时向主 Agent 注入消息。
 
 第一版要验证的核心假设是：
 
@@ -23,9 +23,9 @@ Main Agent
 Trajectory Builder
     │  生成净化后的行为轨迹
     ▼
-Heartbeat Scheduler
-    │  按 heartbeat_probability 随机触发
-    │  每个 Shadow 按自己的概率独立参与
+Trigger Scheduler
+    │  heartbeat：按两级概率随机触发
+    │  final_response：Main settled 后必定触发
     │  并行数量受 max_parallel_shadows 限制
     ▼
 Shadow Runtime × N
@@ -65,7 +65,7 @@ Shadow 的 Markdown 定义持久存在，但运行实例不保留长期记忆。
 
 `config.json` 保存默认 Shadow 模型、`default_thinking_level`、`heartbeat_probability`、`max_parallel_shadows`、`default_shadow_timeout_seconds` 和 `result_batch_window_ms` 等全局调度配置。`default_shadow_model` 省略时，插件使用激活时的当前 Main 模型；用户也可以配置一个固定默认模型。`default_thinking_level` 的内置默认值为 `low`。
 
-每次符合调度条件的 Main `turn_end` 进行 heartbeat 判断前，插件检查并重新加载发生变化的 `config.json`。纯文本轮次不会进入 heartbeat。新配置只影响后续调度和新建实例；已经运行的 Shadow 继续使用启动时取得的配置快照。
+每次 heartbeat 判断或 final-response 调度前，插件检查并重新加载发生变化的 `config.json`。纯文本轮次不会进入 heartbeat，但 Main 的最终文字可以触发 final-response 检查。新配置只影响后续调度和新建实例；已经运行的 Shadow 继续使用启动时取得的配置快照。
 
 `config.json` 使用 last-known-good 策略。解析失败或字段无效时，插件继续使用最后一次有效配置，在界面及 `/shadow status` 中持续显示错误和当前实际生效值。只有首次加载就不存在有效配置时才使用内置默认值；插件不会自动用默认内容覆盖用户的无效文件。
 
@@ -80,6 +80,7 @@ name: 项目事实检查者
 enabled: true
 debug: false
 activation_probability: 0.6
+trigger: [heartbeat]
 run_with_model: openai/gpt-5-mini
 thinking_level: low
 timeout_seconds: 120
@@ -104,7 +105,8 @@ active_for_models:
 | `name` | 展示名称；省略时使用最终解析出的 `id` |
 | `enabled` | 是否参与调度；默认 `true` |
 | `debug` | 是否保存完整 Shadow Session 日志；默认 `false` |
-| `activation_probability` | 每次 heartbeat 时独立激活的概率，范围为 `0` 到 `1`；默认 `0.3` |
+| `activation_probability` | 每次 heartbeat 时独立激活的概率，范围为 `0` 到 `1`；默认 `0.3`，不影响 final_response |
+| `trigger` | 激活方式，可包含 `heartbeat`、`final_response` 或两者；默认 `[heartbeat]` |
 | `active_for_models` | 适用于哪些 Main 模型；`"*"` 表示全部模型，省略时默认 `["*"]` |
 | `run_with_model` | Shadow 自己使用的模型；省略时使用插件默认模型 |
 | `thinking_level` | Shadow 使用的 thinking level；省略时使用插件默认值，再回退到 Main 会话当前生效等级 |
@@ -278,7 +280,11 @@ shell({ command: "npm test" }) · 失败，12 项通过、2 项失败
 
 这样，Shadow 可以观察 Main 做了什么以及行动的大致结果，但无法直接继承 Main 的证据内容和推理路径。需要核实时，Shadow 使用自己的工具重新调查，形成独立证据链。
 
-## 5. Heartbeat 调度
+## 5. Trigger 调度
+
+每个 Shadow 通过 `trigger` 声明激活时机。省略时默认使用 `heartbeat`，因此已有定义保持原有行为。配置为 `[heartbeat, final_response]` 时，两套调度相互独立。
+
+### 5.1 Heartbeat
 
 第一版不识别 plan change、uncertainty、risk 等语义事件，也不使用 Gate Model。
 
@@ -329,6 +335,14 @@ P(activation) = heartbeat_probability × activation_probability
 当一次 heartbeat 的命中数量超过剩余并发槽位时，并发上限会进一步降低每个命中项的最终激活概率。
 
 Main 在会话中切换模型后，后续 heartbeat 直接依据新模型重新筛选。
+
+### 5.2 Final response
+
+配置了 `final_response` 的 Shadow 在 Main 发出非空最终文字，并进入 `agent_settled` 状态后参与调度。该模式仍应用 `enabled` 和 `active_for_models`，但绕过 `heartbeat_probability` 与 `activation_probability`，所有匹配项都必须获得一次运行机会。
+
+最终回复检查使用当时的完整净化轨迹快照。`max_parallel_shadows` 仍是硬并发上限；没有空闲槽位或同一 Shadow 正在运行时，检查进入专用队列，槽位释放后继续执行。新用户输入或 Session 关闭会清空旧 epoch 的队列，防止过期结果介入新任务。
+
+检查结果沿用普通 `shadow-report` 的 steer/follow-up 机制。因此 Main 根据报告修正并再次给出最终回复后，可以再次触发完成检查；Shadow 没有发现时保持沉默，循环自然结束。
 
 ## 6. Shadow 的输出与介入
 
@@ -405,8 +419,9 @@ heartbeat_probability
 max_parallel_shadows
 result_batch_window_ms
 default_shadow_timeout_seconds
-Shadow activation probabilities
+Shadow activation probabilities and triggers
 running Shadow IDs
+queued final-response checks
 active Shadow runs and their start epoch
 lightweight Shadow run events in Main Session custom entries
 ```
@@ -417,7 +432,7 @@ Shadow 的临时 AgentSession 不跨激活复用，也不写回记忆。
 
 轻量事件属于运行观测数据，不参与任何 Agent 的上下文。`debug: true` 产生的完整 Session 日志也只用于调试，不会成为后续 Shadow 的记忆。
 
-插件提供 `Alt+S` 快捷键以及 `/shadow toggle`、`/shadow pause`、`/shadow resume` 命令，只控制当前 Main Session 是否继续产生 heartbeat，不修改全局 Shadow Markdown。执行 pause 时立即中止当前 Session 已运行的 Shadow、清空尚未发送的聚合结果并释放并发槽位；resume 后从后续 Main `turn_end` 恢复概率判断。暂停时底部状态固定显示 `🐙 Paused`，不展示恒为零的运行数量。
+插件提供 `Alt+S` 快捷键以及 `/shadow toggle`、`/shadow pause`、`/shadow resume` 命令，控制当前 Main Session 是否继续产生 heartbeat 或 final-response 检查，不修改全局 Shadow Markdown。执行 pause 时立即中止当前 Session 已运行的 Shadow、清空排队检查和尚未发送的聚合结果并释放并发槽位；resume 后恢复后续调度。暂停时底部状态固定显示 `🐙 Paused`，不展示恒为零的运行数量。
 
 同一个 Shadow 在前一次实例仍运行时不重复激活；不同 Shadow 可以并行运行。
 

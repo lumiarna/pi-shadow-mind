@@ -13,12 +13,16 @@ export interface ShadowConfig {
   randomSeed?: number;
 }
 
+export const SHADOW_TRIGGERS = ["heartbeat", "final_response"] as const;
+export type ShadowTrigger = (typeof SHADOW_TRIGGERS)[number];
+
 export interface ShadowDefinition {
   id: string;
   name: string;
   enabled: boolean;
   debug: boolean;
   activationProbability: number;
+  trigger: ShadowTrigger[];
   activeForModels: string[];
   runWithModel?: string;
   thinkingLevel?: ThinkingLevel;
@@ -38,7 +42,12 @@ export interface RegistrySnapshot {
   diagnostics: RegistryDiagnostic[];
 }
 
-export type RunEndReason = "report" | "silent" | "timeout" | "aborted" | "error";
+export type RunEndReason =
+  | "report"
+  | "silent"
+  | "timeout"
+  | "aborted"
+  | "error";
 
 export interface ShadowReport {
   shadowId: string;
@@ -55,12 +64,15 @@ export interface RuntimeEvent {
   data?: Record<string, unknown>;
 }
 
-export interface HeartbeatDecision {
-  heartbeatRoll: number;
+export interface ShadowActivationDecision {
   activated: Array<{ shadow: ShadowDefinition; roll: number }>;
   candidates: Array<{ shadowId: string; roll: number; selected: boolean }>;
   /** Shadow ids excluded because active_for_models did not match the main model. */
   modelFiltered: string[];
   /** Shadow ids excluded because the same shadow is already running. */
   runningExcluded: string[];
+}
+
+export interface HeartbeatDecision extends ShadowActivationDecision {
+  heartbeatRoll: number;
 }

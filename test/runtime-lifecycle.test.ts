@@ -1,4 +1,7 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShadowMindRuntime } from "../src/runtime.js";
 import type { ShadowRunResult } from "../src/shadow-runner.js";
@@ -16,7 +19,12 @@ interface RuntimeInternals {
     add: (usage: ShadowUsage) => Promise<void>;
   };
   registerEvents: () => void;
-  handleRunEnd: (runId: string, shadow: ShadowDefinition, result: ShadowRunResult) => void;
+  onFinalResponse: (ctx: ExtensionContext) => Promise<void>;
+  handleRunEnd: (
+    runId: string,
+    shadow: ShadowDefinition,
+    result: ShadowRunResult,
+  ) => void;
 }
 
 const shadow: ShadowDefinition = {
@@ -25,6 +33,7 @@ const shadow: ShadowDefinition = {
   enabled: true,
   debug: false,
   activationProbability: 1,
+  trigger: ["heartbeat"],
   activeForModels: [],
   tools: [],
   prompt: "Review",
@@ -69,6 +78,44 @@ describe("ShadowMindRuntime session lifecycle", () => {
       expect(internals.active.size).toBe(0);
     },
   );
+
+  it("runs final-response scheduling only after final assistant text", async () => {
+    const handlers = new Map<string, EventHandler>();
+    const runtime = new ShadowMindRuntime({
+      on: (name: string, handler: EventHandler) => {
+        handlers.set(name, handler);
+      },
+    } as unknown as ExtensionAPI);
+    const internals = runtime as unknown as RuntimeInternals;
+    internals.onFinalResponse = vi.fn().mockResolvedValue(undefined);
+    internals.registerEvents();
+    const agentEnd = handlers.get("agent_end");
+    const agentSettled = handlers.get("agent_settled");
+    const context = {} as ExtensionContext;
+
+    await agentEnd!(
+      {
+        messages: [
+          { role: "assistant", content: [{ type: "toolCall", name: "read" }] },
+        ],
+      },
+      context,
+    );
+    await agentSettled!({}, context);
+    expect(internals.onFinalResponse).not.toHaveBeenCalled();
+
+    await agentEnd!(
+      {
+        messages: [
+          { role: "assistant", content: [{ type: "text", text: "Done." }] },
+        ],
+      },
+      context,
+    );
+    expect(internals.onFinalResponse).not.toHaveBeenCalled();
+    await agentSettled!({}, context);
+    expect(internals.onFinalResponse).toHaveBeenCalledOnce();
+  });
 
   it("persists a stale run without adding it to the new session quota", async () => {
     const runtime = new ShadowMindRuntime({} as ExtensionAPI);

@@ -162,12 +162,17 @@ describe("UsageStore", () => {
 
     const reloaded = new UsageStore(agentDir);
     await reloaded.initialize();
-    expect(reloaded.current).toEqual(usage({
+    expect(reloaded.current).toMatchObject({
       requests: 4,
       input: 100,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
       totalTokens: 100,
-      cost: { input: 1, total: 1 },
-    }));
+      cost: { output: 0, cacheRead: 0, cacheWrite: 0 },
+    });
+    expect(reloaded.current.cost.input).toBeCloseTo(1, 12);
+    expect(reloaded.current.cost.total).toBeCloseTo(1, 12);
   }, 15_000);
 });
 

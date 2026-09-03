@@ -15,7 +15,7 @@ Pi Shadow Mind 让多个专业化认知核心与主 Agent 并行工作。每个 
 ## 一个 Agent，多项独立职责
 
 | 认知核心 | 职责 |
-|---|---|
+| --- | --- |
 | 架构审阅 | 在编码过程中发现上帝组件、职责错位、模块边界缺失和脆弱的扩展点 |
 | 项目事实核验 | 对照真实仓库检查结论，发现模型编造的 API、文件、约束和实现细节 |
 | 文档维护 | 跟踪实现变化，让架构说明、设计决策和使用文档保持同步 |
@@ -48,6 +48,7 @@ Shadow Mind 可以保持只读，只向主 Agent 汇报发现；也可以获得�
 id: architecture-review
 name: Architecture review
 activation_probability: 0.3
+trigger: [heartbeat]
 active_for_models: ["*"]
 tools: [read, grep]
 ---
@@ -66,7 +67,9 @@ tools: [read, grep]
 
 ## 工作方式
 
-主 Agent 的一次 `turn_end` 只有在该轮至少完成过一个工具调用时，扩展才进行 heartbeat 判断。纯文本对话轮次会被跳过，因此普通讨论不会唤醒 Shadow。符合条件的轮次默认以 `1/3` 的概率触发 heartbeat，Shadow Minds 再按照各自的激活概率独立抽选，默认最多同时运行两个。
+每个 Shadow 可以通过 `trigger` 选择一种或两种激活方式。默认值是 `[heartbeat]`：主 Agent 的一次 `turn_end` 只有在该轮至少完成过一个工具调用时，扩展才进行全局 heartbeat 概率判断，符合条件的 Shadow 再按照各自的 `activation_probability` 独立抽选。纯文本对话轮次不会触发 heartbeat。
+
+使用 `trigger: [final_response]` 可以进行完成后审查。它在主 Agent 发出最终文字并完全 settled 后激活，不受 heartbeat 和 `activation_probability` 影响，检查结果仍通过正常的 `shadow-report` follow-up 流程返回。`trigger: [heartbeat, final_response]` 会同时启用两种模式。`max_parallel_shadows` 仍然限制并发数；超出并发槽位的最终回复检查会排队，而不会被跳过。
 
 每次激活都会创建一个全新的临时 Session。它继承主 Agent 原封不动的 system prompt，但只接收净化后的文本轨迹：思考内容会被移除，工具调用后仅保留简洁、确定性的结果概述。
 
@@ -77,7 +80,7 @@ Shadow 定义只是普通 Markdown 文件，可以由用户创建和调整，也
 ## 安装
 
 ```bash
-pi install npm:pi-shadow-mind@0.1.11
+pi install npm:pi-shadow-mind
 ```
 
 首次启动 Session 时，扩展会创建：

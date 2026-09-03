@@ -5,10 +5,16 @@ import { serializeConfig } from "./config.js";
 import { parseShadowMarkdown, ShadowRegistry } from "./registry.js";
 import type { ShadowConfig, ShadowDefinition } from "./types.js";
 
-export type ShadowDraft = Partial<Omit<ShadowDefinition, "filePath">> & { id: string; prompt?: string };
+export type ShadowDraft = Partial<Omit<ShadowDefinition, "filePath">> & {
+  id: string;
+  prompt?: string;
+};
 
 export class EntityStore {
-  constructor(readonly registry: ShadowRegistry, private readonly configPath: string) {}
+  constructor(
+    readonly registry: ShadowRegistry,
+    private readonly configPath: string,
+  ) {}
 
   async list(): Promise<ShadowDefinition[]> {
     return (await this.registry.load()).shadows;
@@ -21,19 +27,46 @@ export class EntityStore {
   }
 
   async create(draft: ShadowDraft): Promise<ShadowDefinition> {
-    if ((await this.list()).some((shadow) => shadow.id === draft.id)) throw new Error(`shadow already exists: ${draft.id}`);
-    return this.writeParsed(join(this.registry.directory, `${draft.id}.md`), draft, { overwrite: false });
+    if ((await this.list()).some((shadow) => shadow.id === draft.id))
+      throw new Error(`shadow already exists: ${draft.id}`);
+    return this.writeParsed(
+      join(this.registry.directory, `${draft.id}.md`),
+      draft,
+      { overwrite: false },
+    );
   }
 
-  async update(id: string, patch: Partial<Omit<ShadowDraft, "id">>): Promise<ShadowDefinition> {
+  async update(
+    id: string,
+    patch: Partial<Omit<ShadowDraft, "id">>,
+  ): Promise<ShadowDefinition> {
     const current = await this.get(id);
-    return this.writeParsed(current.filePath, { ...current, ...definedOnly(patch), id, prompt: patch.prompt ?? current.prompt }, { overwrite: true });
+    return this.writeParsed(
+      current.filePath,
+      {
+        ...current,
+        ...definedOnly(patch),
+        id,
+        prompt: patch.prompt ?? current.prompt,
+      },
+      { overwrite: true },
+    );
   }
 
-  private async writeParsed(filePath: string, draft: ShadowDraft, options: { overwrite: boolean }): Promise<ShadowDefinition> {
-    const source = serializeShadow({ ...draft, prompt: draft.prompt ?? "Describe this Shadow Mind's responsibility." });
+  private async writeParsed(
+    filePath: string,
+    draft: ShadowDraft,
+    options: { overwrite: boolean },
+  ): Promise<ShadowDefinition> {
+    const source = serializeShadow({
+      ...draft,
+      prompt: draft.prompt ?? "Describe this Shadow Mind's responsibility.",
+    });
     const parsed = parseShadowMarkdown(source, filePath);
-    await writeFile(filePath, source, { encoding: "utf8", ...(options.overwrite ? {} : { flag: "wx" }) });
+    await writeFile(filePath, source, {
+      encoding: "utf8",
+      ...(options.overwrite ? {} : { flag: "wx" }),
+    });
     return parsed;
   }
 
@@ -61,19 +94,24 @@ export function serializeShadow(shadow: ShadowDraft): string {
     enabled: shadow.enabled ?? true,
     debug: shadow.debug ?? false,
     activation_probability: shadow.activationProbability ?? 0.3,
+    trigger: shadow.trigger ?? ["heartbeat"],
     active_for_models: shadow.activeForModels ?? ["*"],
     ...(shadow.runWithModel ? { run_with_model: shadow.runWithModel } : {}),
     ...(shadow.thinkingLevel ? { thinking_level: shadow.thinkingLevel } : {}),
-    ...(shadow.timeoutSeconds !== undefined ? { timeout_seconds: shadow.timeoutSeconds } : {}),
+    ...(shadow.timeoutSeconds !== undefined
+      ? { timeout_seconds: shadow.timeoutSeconds }
+      : {}),
     tools: shadow.tools ?? [],
   };
   return `---\n${YAML.stringify(frontmatter).trimEnd()}\n---\n\n${(shadow.prompt ?? "").trim()}\n`;
 }
 
 export function describeShadow(shadow: ShadowDefinition): string {
-  return `${shadow.enabled ? "enabled" : "disabled"} ${shadow.id} (${shadow.name}) p=${shadow.activationProbability} models=${shadow.activeForModels.join(",")} tools=${shadow.tools.join(",") || "default"} file=${basename(shadow.filePath)}`;
+  return `${shadow.enabled ? "enabled" : "disabled"} ${shadow.id} (${shadow.name}) p=${shadow.activationProbability} trigger=${shadow.trigger.join(",")} models=${shadow.activeForModels.join(",")} tools=${shadow.tools.join(",") || "default"} file=${basename(shadow.filePath)}`;
 }
 
 function definedOnly<T extends object>(value: T): Partial<T> {
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as Partial<T>;
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => item !== undefined),
+  ) as Partial<T>;
 }

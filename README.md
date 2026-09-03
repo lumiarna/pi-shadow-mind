@@ -17,7 +17,7 @@ While the main agent implements, other minds can independently review decisions,
 The main agent keeps moving. Shadow Minds independently protect the parts of the work that matter to you.
 
 | Cognitive core | Responsibility |
-|---|---|
+| --- | --- |
 | Architecture review | Detect growing god components, misplaced responsibilities, missing module boundaries, and fragile extension points while code is being written |
 | Project grounding | Check claims against the actual repository and catch invented APIs, files, constraints, or implementation details |
 | Documentation maintenance | Track implementation changes and keep architecture notes, decisions, and usage documentation aligned |
@@ -50,6 +50,7 @@ Create `~/.pi/agent/shadow-minds/architecture-review.md`:
 id: architecture-review
 name: Architecture review
 activation_probability: 0.3
+trigger: [heartbeat]
 active_for_models: ["*"]
 tools: [read, grep]
 ---
@@ -69,7 +70,9 @@ This Shadow is read-only. It reviews the implementation in parallel and reports 
 
 ## How it works
 
-After a main-agent `turn_end` that completed at least one tool call, the extension evaluates a heartbeat. Pure text-only conversation turns are skipped, so ordinary discussion does not wake Shadows. By default, eligible turns fire a heartbeat with probability `1/3`; Shadow Minds then roll independently using their own activation probabilities, with at most two running concurrently.
+Each Shadow chooses one or both activation triggers with `trigger`. The default is `[heartbeat]`: after a main-agent `turn_end` that completed at least one tool call, the extension evaluates the global heartbeat probability, then eligible Shadows roll independently using `activation_probability`. Pure text-only conversation turns are skipped.
+
+Use `trigger: [final_response]` for completion review. It activates after the main agent has emitted its final text, bypasses both heartbeat and activation probability, and sends findings back through the normal `shadow-report` follow-up flow. `trigger: [heartbeat, final_response]` enables both modes. `max_parallel_shadows` remains the concurrency limit; excess final-response checks are queued rather than skipped.
 
 Each activation starts a fresh temporary session. It inherits the main agent's unchanged system prompt but receives only a sanitized plain-text trajectory: assistant thinking is removed, while tool calls retain compact, deterministic result summaries.
 
@@ -80,7 +83,7 @@ Shadow definitions are ordinary Markdown files. They can be created and adjusted
 ## Installation
 
 ```bash
-pi install npm:pi-shadow-mind@0.1.11
+pi install npm:pi-shadow-mind
 ```
 
 On the first session start, the extension creates:

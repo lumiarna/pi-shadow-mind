@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+
+      - name: Verify tag and package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "$GITHUB_REF_NAME" != "v$package_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $package_version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify
+        run: npm run verify
+
+      - name: Build
+        run: npm run build
+
+      - name: Package release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="$GITHUB_WORKSPACE/release"
+          standalone="$release_dir/pi-shadow-mind-$VERSION"
+          tarball="$release_dir/pi-shadow-mind-$VERSION.tgz"
+
+          mkdir -p "$release_dir"
+          npm pack --ignore-scripts --pack-destination "$release_dir"
+          mkdir "$standalone"
+          tar -xzf "$tarball" --strip-components=1 -C "$standalone"
+          find "$standalone" -exec touch -t 198510261615 {} +
+          (
+            cd "$release_dir"
+            zip -Xqr "pi-shadow-mind-$VERSION.zip" "pi-shadow-mind-$VERSION"
+          )
+
+          node scripts/smoke-standalone.mjs "$standalone"
+
+          if tar -tzf "$tarball" | grep -Eq '^package/(src|test)/'; then
+            echo "Source or test files leaked into the npm package" >&2
+            exit 1
+          fi
+          zipinfo -1 "$release_dir/pi-shadow-mind-$VERSION.zip" \
+            | awk -v prefix="pi-shadow-mind-$VERSION/" 'NF && index($0, prefix) != 1 { bad=1 } END { exit bad }'
+          (
+            cd "$release_dir"
+            sha256sum "pi-shadow-mind-$VERSION.tgz" "pi-shadow-mind-$VERSION.zip" > SHA256SUMS.txt
+          )
+
+      - name: Publish to npm with OIDC
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="./release/pi-shadow-mind-$VERSION.tgz"
+          if published_shasum="$(npm view "pi-shadow-mind@$VERSION" dist.shasum --registry=https://registry.npmjs.org/ 2>/dev/null)"; then
+            local_shasum="$(sha1sum "$tarball" | awk '{print $1}')"
+            if [[ "$local_shasum" != "$published_shasum" ]]; then
+              echo "pi-shadow-mind@$VERSION exists, but its tarball differs from this tag" >&2
+              exit 1
+            fi
+            echo "pi-shadow-mind@$VERSION already matches this tag; skipping npm publish"
+          else
+            npm publish "$tarball"
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            "release/pi-shadow-mind-$VERSION.tgz"
+            "release/pi-shadow-mind-$VERSION.zip"
+            "release/SHA256SUMS.txt"
+          )
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --title "pi-shadow-mind $VERSION" \
+              --generate-notes
+          fi
