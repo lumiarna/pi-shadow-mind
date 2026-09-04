@@ -66,7 +66,7 @@ Report only concrete, actionable issues grounded in the visible trajectory or
 repository. If the current work is unrelated, do not intervene.
 ```
 
-This Shadow is read-only. It reviews the implementation in parallel and reports concrete architectural concerns without taking control of the main task.
+This Shadow is read-only. It reviews the implementation in parallel and reports concrete architectural concerns without taking control of the main task. Tool names extend the default read-only set; use `tools: ["*"]` only when the Shadow should inherit every tool currently registered in the main session, including tools added later.
 
 ## How it works
 

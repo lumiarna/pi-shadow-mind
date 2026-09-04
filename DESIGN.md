@@ -111,7 +111,7 @@ active_for_models:
 | `run_with_model` | Shadow 自己使用的模型；省略时使用插件默认模型 |
 | `thinking_level` | Shadow 使用的 thinking level；省略时使用插件默认值，再回退到 Main 会话当前生效等级 |
 | `timeout_seconds` | Shadow 单次运行超时；省略时使用插件默认超时 |
-| `tools` | 在 Pi SDK `readOnlyTools` 之上追加的工具白名单；默认 `[]` |
+| `tools` | 在 Pi SDK `readOnlyTools` 之上追加的工具白名单；`["*"]` 授权当前 Session 的全部工具；默认 `[]` |
 
 `name` 只用于 `shadow-report` 和状态界面展示，不参与身份判断；省略时回退到最终解析出的 `id`。Markdown 正文就是 Shadow 的认知定义、长期职责和行为要求。
 
@@ -131,9 +131,9 @@ Pi SDK readOnlyTools
 
 默认名称集合包含 `read`、`grep`、`find` 和 `ls`。激活时插件按名称从当前 Main Session 的最终工具 registry 解析实际实现，因此会继承其他插件对同名工具的覆盖以及当前环境适配。这里的 `readOnlyTools` 表示默认名称约定，不保证被覆盖后的实现仍然没有副作用。
 
-`tools` 是在该集合之上追加的显式白名单，省略时视为 `[]`。例如 `tools: [write]` 会获得当前 registry 中的默认四个工具、`write` 和内置 `report_to_main`。
+`tools` 是在该集合之上追加的显式白名单，省略时视为 `[]`。例如 `tools: [write]` 会获得当前 registry 中的默认四个工具、`write` 和内置 `report_to_main`。使用 `tools: ["*"]` 时，Shadow 会获得激活时 Main Session registry 中的全部工具以及 `report_to_main`；之后新增或改名的工具会自动随 registry 解析，不需要同步维护定义文件。
 
-Pi 的通用 `ToolDefinition` 没有可供插件查询的只读属性，因此自定义工具不会被自动归类或加入；编辑文件、执行 Shell 或其他能力也不会被隐式继承自 Main。配置的追加工具在当前 Session 不存在时，插件忽略该项、写入轻量运行事件，其余工具继续正常提供。
+Pi 的通用 `ToolDefinition` 没有可供插件查询的只读属性，因此自定义工具不会被自动归类或加入；编辑文件、执行 Shell 或其他能力也不会被隐式继承自 Main，除非显式列出名称或使用 `"*"`。配置的追加工具在当前 Session 不存在时，插件忽略该项、写入轻量运行事件，其余工具继续正常提供。
 
 `tools` 白名单本身就是用户对该 Shadow 的执行授权。列入白名单的写入、Shell 或其他工具可以由后台 Shadow 直接调用，插件不增加逐次确认层。
 

@@ -20,6 +20,7 @@ import { addUsage, zeroUsage, type ShadowUsage } from "./usage.js";
  * tool registry, per the design contract:
  *
  * - the final set is `readOnlyTools defaults + whitelist + report_to_main`;
+ * - `*` in the whitelist means all tools currently present in the main session;
  * - names that do not exist in the main session are dropped (ignored) and
  *   returned as `missing`, while the rest are provided normally;
  * - the built-in `report_to_main` is always kept.
@@ -30,7 +31,9 @@ export function resolveShadowTools(
   defaults: readonly string[] = DEFAULT_READ_TOOLS,
 ): { tools: string[]; missing: string[] } {
   const builtin = new Set(["report_to_main"]);
-  const requested = [...new Set([...defaults, ...whitelist, ...builtin])];
+  const requested = whitelist.includes("*")
+    ? [...new Set([...available, ...builtin])]
+    : [...new Set([...defaults, ...whitelist, ...builtin])];
   const tools: string[] = [];
   const missing: string[] = [];
   for (const name of requested) {
@@ -120,13 +123,13 @@ export function buildRunResult(options: {
   const usage = usageMetrics(ownMessages);
   return {
     reason,
-    ...(error !== undefined ? { error } : {}),
+    ...(error === undefined ? {} : { error }),
     durationMs,
     toolNames: session?.getActiveToolNames() ?? [],
     missingTools,
     ...metrics,
     usage,
-    ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+    ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
     sessionFile: session?.sessionFile,
   };
 }
