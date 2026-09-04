@@ -8,7 +8,9 @@ describe("parseConfig", () => {
   });
 
   it("rejects invalid probability", () => {
-    expect(() => parseConfig({ heartbeat_probability: 2 })).toThrow(/heartbeat_probability/);
+    expect(() => parseConfig({ heartbeat_probability: 2 })).toThrow(
+      /heartbeat_probability/,
+    );
   });
 
   it("accepts a deterministic benchmark seed", () => {

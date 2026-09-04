@@ -20,24 +20,12 @@
 - `10px` 只用于极弱、非关键元数据，不用于正文、操作标签、表单内容或必须快速识别的状态；不要用缩小字体代替合理的布局和截断。
 - 缩小字号时同步检查行高、图标尺寸、对齐、焦点环和点击区域；文字可以紧凑，但交互命中区不得随之缩小。
 
-## Delivery quality gate
-
-- 交付代码前运行完整的类型检查、测试、构建和项目级诊断，并以全量结果而非仅当前改动或阻塞项作为判断依据。
-- 逐条审视诊断：错误和可操作警告优先修复根因；能以合理成本清零时应清零，但不要为了迎合启发式规则破坏清晰、正确的结构。
-- 禁止通过排除源码或测试目录、关闭检查器、放宽全局阈值、批量添加忽略注释，或用等价别名掩盖 `unknown`/`any` 来制造“零警告”。确认规则不适用时，使用最小且有证据的配置或抑制，并通过原生分析器、类型检查或聚焦测试验证。
-- 最终验证期间的修改会使相关旧结果失效，必须重跑受影响检查。交付时准确说明最终错误和警告数量；仍有非行动性警告时说明原因和影响，不宣称完全干净。
-
 ## Release process
 
-发布目标是同时生成两个产物：用于 npm 发布的 `pi-shadow-mind-<version>.tgz`，以及解压后可由 `pi install ./pi-shadow-mind-<version>` 安装的 standalone ZIP。
+正式发布由 `.github/workflows/release.yml` 在 `v*` tag 上完成；本地只负责准备并推送发布提交：
 
-1. 发布前更新 `package.json` 版本，并运行 `npm install` 同步 lockfile。不要覆盖同版本的既有正式产物；代码有变化时应提升版本。
-2. 运行 `npm run verify`，要求类型检查及全部测试通过。
-3. 运行 `npm run build`，确认扩展入口为 `dist/index.js`，包内不分发 `src/` 和测试。构建必须把 `yaml` 等第三方运行时依赖打入入口 bundle；Pi 核心包与 `typebox` 保持 external。
-4. 运行 `npm pack --ignore-scripts --pack-destination release` 生成 `.tgz`。若未提前执行验证和构建，则改用普通 `npm pack`，由 `prepack` 自动完成。
-5. 制作 standalone ZIP：将 `.tgz` 解包至同名目录，再压缩整个同名目录。ZIP 内必须保留顶层包目录，且不得依赖接收方另行安装 `yaml` 等普通运行时依赖。
-6. 在隔离目录中通过 Pi `DefaultResourceLoader` 加载 standalone 包的 `dist/index.js`。冒烟检查必须设置 `noExtensions: true` 并仅通过 `additionalExtensionPaths` 加载待测入口，避免本机已配置的同名插件造成假冲突。
-7. 确认加载无错误，且可识别 `/shadow` 和全部管理工具。随后为 `.tgz`、ZIP 生成 SHA-256，并写入 `release/SHA256SUMS.txt`。
-8. 交付时优先提供 standalone ZIP；`.tgz` 用于 npm 发布。说明 ZIP 的安装方式：解压后运行 `pi install ./pi-shadow-mind-<version>`。
+1. 选择未发布的新版本，运行 `npm version <version> --no-git-tag-version`，一次同步 `package.json` 与 lockfile。
+2. 提交并推送代码，然后创建并推送与包版本一致的 `v<version>` tag。
+3. 确认 Release workflow 成功。workflow 负责验证、构建、生成并冒烟检查 npm tarball 与 standalone ZIP、通过 OIDC 发布 npm，以及创建带校验和的 GitHub Release。
 
-清理或覆盖 `release/` 下的暂存目录和旧产物前，必须解析并核对目标的绝对路径确实位于当前项目的 `release/` 内，不得对工作区根目录使用递归删除。
+交付时优先使用 standalone ZIP；解压后运行 `pi install ./pi-shadow-mind-<version>`。本地无需重复制作正式发布产物。
