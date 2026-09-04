@@ -6,11 +6,13 @@ Shadow Mind 是一个运行在 Pi 主 Agent 旁边的通用并行认知运行时
 
 主 Agent 继续正常推理和执行任务；插件可以通过 heartbeat 随机唤醒多个 Shadow Mind，也可以在主 Agent 完成最终回复后确定性唤醒指定 Shadow。它们沿各自的职责独立观察或推进任务，在有结果需要同步时向主 Agent 注入消息。
 
-第一版要验证的核心假设是：
+Shadow Mind 的核心设计目标是：
 
-> 不引入复杂的智能调度，仅通过随机唤醒多个具有持久职责的异步 Agent，能否让一个 Pi Session 稳定推进多条相互补充的认知与任务线。
+> 通过随机唤醒多个具有持久职责的异步 Agent，让一个 Pi Session 稳定推进多条相互补充的认知与任务线。
 
-纠错、事实核查和约束检查只是典型场景；Shadow 也可以探索替代路线、维护文档或承担其他长期职责。“多核”和“章鱼”可用于解释和后续产品表达，但不是运行时的技术定义。
+纠错、事实核查和约束检查只是典型场景；Shadow 也可以探索替代路线、维护文档或承担其他长期职责。
+
+设计理由、候选方向和已拆出的非主线内容记录在 [DESIGN-Evolution.md](./DESIGN-Evolution.md)。
 
 ## 2. 核心结构
 
@@ -37,7 +39,7 @@ Shadow Runtime × N
 Shadow 的持久化定义与运行实例相互分离：
 
 - Shadow Mind 的定义是用户可阅读、可编辑的 Markdown 实体。
-- 第一版只维护全局 Shadow registry，不提供项目级 Shadow。
+- 系统维护单一的全局 Shadow registry。
 - 每次激活产生全新的临时 AgentSession。
 - 插件负责发现实体、筛选、随机调度、构造上下文和回收结果。
 
@@ -49,7 +51,7 @@ Shadow 的 Markdown 定义持久存在，但运行实例不保留长期记忆。
 
 每个 Shadow Mind 使用一个 Markdown 文件描述。用户可以创建和调整它，主 Agent 也可以通过插件工具创建和调整它。
 
-第一版统一从全局目录加载定义：
+Shadow 定义统一从全局目录加载：
 
 ```text
 ~/.pi/agent/shadow-minds/
@@ -63,7 +65,7 @@ Shadow 的 Markdown 定义持久存在，但运行实例不保留长期记忆。
 
 该目录属于用户数据，不放入插件安装目录，也不随当前项目切换。插件级配置保存在 `config.json`；registry 只扫描目录顶层的 `.md` 文件，不读取 `config.json`，也不递归读取 `logs/`。
 
-`config.json` 保存默认 Shadow 模型、`default_thinking_level`、`heartbeat_probability`、`max_parallel_shadows`、`default_shadow_timeout_seconds` 和 `result_batch_window_ms` 等全局调度配置。`default_shadow_model` 省略时，插件使用激活时的当前 Main 模型；用户也可以配置一个固定默认模型。`default_thinking_level` 的内置默认值为 `low`。
+`config.json` 保存默认 Shadow 模型、`default_thinking_level`、`heartbeat_probability`、`max_parallel_shadows`、`default_shadow_timeout_seconds`、`headless_drain_timeout_seconds`、`result_batch_window_ms` 和可选的 `random_seed` 等全局调度配置。`default_shadow_model` 省略时，插件使用激活时的当前 Main 模型；用户也可以配置一个固定默认模型。`default_thinking_level` 的内置默认值为 `low`。
 
 每次 heartbeat 判断或 final-response 调度前，插件检查并重新加载发生变化的 `config.json`。纯文本轮次不会进入 heartbeat，但 Main 的最终文字可以触发 final-response 检查。新配置只影响后续调度和新建实例；已经运行的 Shadow 继续使用启动时取得的配置快照。
 
@@ -97,7 +99,7 @@ active_for_models:
 重点关注不存在的模块、接口、现有能力和技术前提。需要时使用自己的工具独立核实；没有值得介入的问题时保持沉默。
 ```
 
-第一版 frontmatter 包含以下运行字段：
+frontmatter 包含以下运行字段：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -115,7 +117,7 @@ active_for_models:
 
 `name` 只用于 `shadow-report` 和状态界面展示，不参与身份判断；省略时回退到最终解析出的 `id`。Markdown 正文就是 Shadow 的认知定义、长期职责和行为要求。
 
-`active_for_models` 绑定的是被观察的 Main 模型，`run_with_model` 则指定 Shadow 自己运行时使用的模型。匹配前由 Pi 将 Main 的别名或简写解析为完整 `provider/model-id`；第一版只支持该完整 ID 和精确值 `"*"`，不引入其他通配、正则、标签或复杂条件。模型选择优先级为：Shadow 的 `run_with_model` → 插件的 `default_shadow_model` → 激活时的当前 Main 模型。
+`active_for_models` 绑定的是被观察的 Main 模型，`run_with_model` 则指定 Shadow 自己运行时使用的模型。匹配前由 Pi 将 Main 的别名或简写解析为完整 `provider/model-id`；模型过滤使用完整 ID 和精确值 `"*"` 进行匹配。模型选择优先级为：Shadow 的 `run_with_model` → 插件的 `default_shadow_model` → 激活时的当前 Main 模型。
 
 如果显式配置的 `run_with_model` 当前不存在、未认证或不可用，本次激活失败并写入轻量运行事件，不自动换用其他模型。只有省略该字段时才使用插件默认 Shadow 模型。
 
@@ -139,19 +141,17 @@ Pi 的通用 `ToolDefinition` 没有可供插件查询的只读属性，因此�
 
 ### 写入并发边界
 
-第一版不包装或替换 Main、Pi 内置工具及第三方插件工具，也不承诺文件级写入互斥。Pi 允许插件覆盖和新增工具，而任意工具可能产生无法预先声明的文件副作用；不完整的锁机制会形成错误的安全保证。
+写入协调采用显式授权和职责约定：运行时直接使用 Main、Pi 内置工具及第三方插件工具，并保持工具原有执行语义；文件级写入不建立运行时互斥。
 
-当用户把写入、Shell 或其他有副作用的工具加入 Shadow 白名单时，即表示接受它与 Main 或其他 Shadow 并发执行产生冲突的风险。可以在 Shadow Markdown 中约定职责范围，例如文档 Shadow 只维护 `docs/`，但这属于模型行为约束，不是运行时强制隔离。
-
-未来可以提供自愿接入的协作式锁协议，让能够声明目标文件的工具主动参与协调；未知工具仍不能被视为受保护。该协议不属于第一版。
+当用户把写入、Shell 或其他有副作用的工具加入 Shadow 白名单时，即表示接受它与 Main 或其他 Shadow 并发执行产生冲突的风险。Shadow Markdown 可以进一步约定职责范围，例如文档 Shadow 只维护 `docs/`；该约定由 Shadow 自身遵守。
 
 每个 Shadow 运行实例还会固定获得内置工具 `report_to_main`。该工具用于提交一条值得 Main 注意的发现，不属于普通工具白名单，也不能被移除。它是终止型工具：一旦调用，当前 Shadow Agent loop 立即结束，运行实例随即回收，因此一次激活最多上报一条意见。Shadow 正常结束且未调用该工具时，运行结果视为“保持沉默”。
 
 “保持沉默”不代表 Shadow 没有执行工作。即使运行中成功调用过写入或其他有副作用的工具，Shadow 仍可不调用 `report_to_main` 而正常结束；插件不强制生成工作报告。此类行为只通过轻量运行事件和可选的 debug Session 日志追踪。
 
-第一版 `report_to_main` 只接受一个 `content` 参数。它不包含严重度、类别或固定的报告结构；不同 Shadow 的表达要求由各自 Markdown 正文定义。
+`report_to_main` 使用单一的 `content` 参数。严重度、类别和表达结构由各自 Shadow Markdown 定义。
 
-`content` 不设置硬性长度上限，也不在运行时截断。公共协议只要求报告清楚、简洁，具体详略由对应 Shadow 定义控制。
+`content` 按完整内容传递。公共协议要求报告清楚、简洁，具体详略由对应 Shadow 定义控制。
 
 ```text
 report_to_main({ content: "..." })
@@ -159,13 +159,13 @@ report_to_main({ content: "..." })
 
 插件提供默认运行超时，内置默认值为 `300s`。单个 Shadow 可以通过 `timeout_seconds` 覆盖。超时后插件终止该运行实例、释放并发槽位，并丢弃未完成结果，不向 Main 注入消息。
 
-第一版不设置单次 model call 数或工具调用次数上限。运行资源只通过 heartbeat 概率、Shadow 激活概率、最大并发数和时间超时控制。
+运行资源通过 heartbeat 概率、Shadow 激活概率、最大并发数和时间超时控制。
 
 所有 Shadow 都记录轻量运行事件，包括激活、沉默、上报、超时、中止、耗时、执行模型以及工具使用摘要。工具摘要只记录工具名、调用次数和成功/失败统计，不保存参数或结果。事件作为自定义 entries 写入当前 Main Session，随会话持久化和恢复，但不参与 Main 的模型上下文。
 
 每次 Main `turn_end` 都会写入一条轻量调度事件。没有工具活动的纯文本轮次记录为跳过；符合条件的轮次记录 heartbeat 随机值与是否触发，触发后再记录候选 Shadow、各自随机值、概率命中项、模型过滤、运行中排除、并发槽位裁剪和最终激活项。事件不保存 Main 或 Shadow 上下文，用于完整复盘调度决策。
 
-`/shadow` 打开统一状态面板，展示当前 Session 的暂停状态、有效与无效 Shadow、正在运行的实例、最近事件和实际生效配置；`/shadow status` 提供对应的摘要视图。第一版面板以观察为主，不内置完整 Markdown 编辑器。
+`/shadow` 打开统一状态面板，展示当前 Session 的暂停状态、有效与无效 Shadow、正在运行的实例、最近事件和实际生效配置；`/shadow status` 提供对应的摘要视图。面板负责运行观察，Shadow Markdown 通过文件或管理工具编辑。
 
 Pi 主界面常驻一个紧凑状态指示，例如 `🐙 2`，数字表示当前运行的 Shadow 实例数。产生报告、超时或错误时指示器短暂改变状态，不弹出逐次通知；详细信息统一进入 `/shadow` 面板。
 
@@ -212,7 +212,7 @@ registry 加载时逐文件校验 frontmatter。无效 Markdown 只会使对应 
 
 `active_for_models` 省略时视为 `["*"]`，匹配所有 Main 模型。只有用于补偿特定模型表现的 Shadow 才需要显式声明模型列表。
 
-每次 heartbeat 判断前，registry 检查顶层 Markdown 的文件变更，只重新解析新增或发生变化的文件，并移除已删除定义。不使用文件系统实时监听；用户手动编辑的结果在下一次 Main `turn_end` 生效。
+每次 heartbeat 判断前，registry 轮询顶层 Markdown 的文件变更，只重新解析新增或发生变化的文件，并移除已删除定义。用户手动编辑的结果在下一次 Main `turn_end` 生效。
 
 Shadow 实例启动时取得定义的不可变快照。运行期间对 Markdown 的修改、禁用或删除只影响后续激活，不会改变或中止已有实例；需要立即停止时由用户执行 `/shadow pause`。
 
@@ -241,7 +241,7 @@ Main system prompt
 
 这里的“全部历史”以 Main 激活时实际可见的上下文为准。Main 已发生 compaction 时，Shadow 继承压缩后的上下文，不绕过 compaction 读取已被替换的原始消息。
 
-由于净化轨迹是 Main 上下文的严格子集，第一版不增加单独的摘要或截断机制。如果某个 Shadow 配置的 `run_with_model` 上下文窗口更小而无法容纳轨迹，则该次激活失败并记录原因，不生成介入消息。
+Shadow 直接使用 Main 上下文的完整净化子集。如果某个 Shadow 配置的 `run_with_model` 上下文窗口更小而无法容纳轨迹，则该次激活失败并记录原因，不生成介入消息。
 
 以下内容不进入 Shadow 上下文：
 
@@ -249,7 +249,7 @@ Main system prompt
 - 工具返回的完整内容；
 - 其他 Shadow 未上报的推理过程。
 
-第一版原样保留工具调用参数，不额外识别或脱敏其中的密钥、令牌等内容。如果 Shadow 使用与 Main 不同的模型供应商，这些参数会随净化轨迹发送给 `run_with_model` 指定的模型；用户配置执行模型时需要接受这一信息边界。
+净化轨迹按原文保留工具调用参数，包括其中可能出现的密钥、令牌等内容。如果 Shadow 使用与 Main 不同的模型供应商，这些参数会随净化轨迹发送给 `run_with_model` 指定的模型；用户配置执行模型时需要接受这一信息边界。
 
 工具调用和结果概述写在同一行，以 `·` 分隔：
 
@@ -286,9 +286,7 @@ shell({ command: "npm test" }) · 失败，12 项通过、2 项失败
 
 ### 5.1 Heartbeat
 
-第一版不识别 plan change、uncertainty、risk 等语义事件，也不使用 Gate Model。
-
-Main model call 完成后，只有该 `turn_end` 至少包含一个已完成的工具调用，才按插件配置 `heartbeat_probability` 独立判断是否产生 heartbeat。默认值为 `1/3`：
+Heartbeat 使用“工具轮次 + 随机概率”作为调度信号。Main model call 完成后，只有该 `turn_end` 至少包含一个已完成的工具调用，才按插件配置 `heartbeat_probability` 独立判断是否产生 heartbeat。默认值为 `1/3`：
 
 ```text
 P(heartbeat after eligible tool-bearing turn) = heartbeat_probability
@@ -301,7 +299,7 @@ default heartbeat_probability = 1 / 3
 
 默认情况下，相邻 heartbeat 的期望间隔为 3 个符合条件的工具轮次，但实际间隔保持随机：可能连续发生，也可能较长时间不发生。
 
-第一版直接使用运行时随机数，不提供或持久化随机 seed，也不承诺重放同一调度序列。实际抽样值通过轻量调度事件保留，供事后分析。
+调度默认使用运行时随机数；配置 `random_seed` 时使用可复现的伪随机序列。实际抽样值通过轻量调度事件保留，供事后分析。
 
 heartbeat 发生时：
 
@@ -383,7 +381,7 @@ Running Shadow from epoch 12     → 立即中止并回收
 
 Shadow 严格绑定启动它的 Main Session。用户切换、替换或关闭 Session，以及插件卸载或运行时关闭时，插件立即中止该 Session 的全部 Shadow、清空报告聚合并释放资源；结果不会跨会话投递，也不会等待后台实例完成。
 
-这允许 Main 保持非阻塞，同时避免旧 Shadow 干扰新的用户任务。第一版接受用户偶尔先看到初始回答、随后看到补充或自我修正。
+这一投递方式让 Main 保持非阻塞，同时避免旧 Shadow 干扰新的用户任务；用户可能先看到初始回答，随后看到补充或自我修正。
 
 ### 多结果聚合
 
@@ -397,7 +395,7 @@ Main 声称项目已有 UserRole，但当前轨迹不足以支持该结论。
 当前方案遗漏了用户要求的访客只读访问。
 ```
 
-聚合只负责按 Shadow 名称分段拼接，不调用额外模型进行总结或去重。插件配置 `result_batch_window_ms` 控制收集窗口，默认值为 `400`。
+聚合按 Shadow 名称直接分段拼接。插件配置 `result_batch_window_ms` 控制收集窗口，默认值为 `400`。
 
 聚合消息仍遵循 epoch：窗口内混入的过期结果在发送前被丢弃。
 
@@ -440,9 +438,9 @@ Shadow 的临时 AgentSession 不跨激活复用，也不写回记忆。
 
 前一次实例结束后，同一个 Shadow 可以在同一用户 epoch 内被后续 heartbeat 再次激活，不设置每 epoch 次数上限。每次仍创建全新的临时 AgentSession，并取得激活时刻的最新完整净化轨迹。
 
-## 8. 第一版范围
+## 8. 当前能力
 
-第一版包含：
+系统交付以下能力：
 
 - 从 Markdown 发现和加载多个 Shadow Mind；
 - 隔离无效定义并提供持续可见的校验错误；
@@ -472,22 +470,10 @@ Shadow 的临时 AgentSession 不跨激活复用，也不写回记忆。
 - 运行中使用 `steer`，Main 结束后使用 follow-up；
 - 在短聚合窗口内合并同期 Shadow 意见后一次性注入；
 - 使用可见的 `shadow-report` 自定义消息呈现聚合结果；
-- 使用 epoch 丢弃跨用户任务的迟到结果。
+- 使用 epoch 丢弃跨用户任务的迟到结果；
 - 新 epoch 开始时立即中止旧 epoch 的 Shadow 并释放资源；
 - 用户手动中止 Main 时同步停止当前 epoch 的 Shadow；
-- 支持按 Main Session 暂停和恢复整个 Shadow 系统；
-
-第一版明确不包含：
-
-- 项目级 Shadow 及全局/项目覆盖规则；
-- 语义 Gate 或 Expected Value of Thinking 预测；
-- 根据错误、风险、计划变化等事件进行规则调度；
-- 学习型调度器；
-- Shadow 之间通信；
-- 将 Main thinking 或完整工具结果暴露给 Shadow；
-- 根据历史表现自动训练或优化 Shadow；
-- Shadow 的跨次运行记忆。
-- Main、Shadow 与第三方工具之间的写入并发保护。
+- 支持按 Main Session 暂停和恢复整个 Shadow 系统。
 
 ## 9. 验证方式
 
@@ -499,7 +485,7 @@ vs
 Pi + multiple Shadow Minds
 ```
 
-第一阶段重点观察：
+持续观察以下指标：
 
 - Shadow 是否发现了 Main 未发现的问题；
 - Shadow 的介入是否改变了 Main 的后续行为；
@@ -507,4 +493,4 @@ Pi + multiple Shadow Minds
 - 无效或有害介入的比例；
 - heartbeat 频率和并行数量带来的成本与延迟。
 
-这些运行数据将决定后续是否值得引入更复杂的调度，而不是在第一版提前设计智能 Gate。
+这些运行数据将作为后续调度机制演化的依据。

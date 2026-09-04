@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, parseConfig } from "../src/config.js";
 
 describe("parseConfig", () => {
-  it("uses v1 defaults", () => {
+  it("uses built-in defaults", () => {
     expect(parseConfig({})).toEqual(DEFAULT_CONFIG);
     expect(DEFAULT_CONFIG.defaultShadowTimeoutSeconds).toBe(300);
   });

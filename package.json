@@ -34,7 +34,8 @@
     "dist",
     "README.md",
     "README.zh-CN.md",
-    "DESIGN.md"
+    "DESIGN.md",
+    "DESIGN-Evolution.md"
   ],
   "pi": {
     "extensions": [
