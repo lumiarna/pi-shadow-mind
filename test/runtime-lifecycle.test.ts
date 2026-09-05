@@ -23,6 +23,19 @@ interface RuntimeInternals {
   };
   refresh: (ctx: ExtensionContext) => Promise<RegistrySnapshot>;
   registerEvents: () => void;
+  configStore: {
+    current: {
+      heartbeatProbability: number;
+      heartbeatTools: string[];
+      maxParallelShadows: number;
+      defaultShadowTimeoutSeconds: number;
+      headlessDrainTimeoutSeconds: number;
+      resultBatchWindowMs: number;
+      defaultThinkingLevel: string;
+    };
+  };
+  onHeartbeat: (ctx: ExtensionContext, executedTools?: ReadonlySet<string>) => Promise<void>;
+  recentEvents: Array<{ kind: string; data?: Record<string, unknown> }>;
   handleRunEnd: (
     runId: string,
     shadow: ShadowDefinition,
@@ -39,6 +52,7 @@ const shadow: ShadowDefinition = {
   trigger: ["heartbeat"],
   activeForModels: [],
   tools: [],
+  activationTools: [],
   prompt: "Review",
   filePath: "review.md",
 };
@@ -173,6 +187,27 @@ describe("ShadowMindRuntime session lifecycle", () => {
     expect(persisted).toEqual([usage]);
     expect(internals.sessionUsage).toEqual(zeroUsage());
     expect(internals.recentRuns).toHaveLength(0);
+  });
+
+  it("skips heartbeat when executed tools do not match heartbeatTools", async () => {
+    const { handlers, internals } = createRuntimeHarness();
+    internals.configStore.current.heartbeatTools = ["bash", "write"];
+    internals.onHeartbeat = vi.fn();
+    internals.registerEvents();
+
+    const turnEnd = handlers.get("turn_end");
+    const context = {} as ExtensionContext;
+
+    // Turn 1: Only 'read' -> filtered
+    await turnEnd!({ toolResults: [{ toolName: "read" }] }, context);
+    expect(internals.onHeartbeat).not.toHaveBeenCalled();
+    expect(internals.recentEvents.at(-1)?.data?.reason).toBe("tool-filtered");
+
+    // Turn 2: 'bash' -> passes to onHeartbeat
+    await turnEnd!({ toolResults: [{ toolName: "bash" }] }, context);
+    expect(internals.onHeartbeat).toHaveBeenCalledOnce();
+    const passedTools = (internals.onHeartbeat as any).mock.calls[0][1];
+    expect(passedTools).toEqual(new Set(["bash"]));
   });
 });
 

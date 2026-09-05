@@ -20,6 +20,7 @@ import { createRandom } from "./random.js";
 import {
   decideFinalResponse,
   decideHeartbeat,
+  extractToolNames,
   shouldEvaluateFinalResponse,
   shouldEvaluateHeartbeat,
 } from "./scheduler.js";
@@ -165,14 +166,22 @@ export class ShadowMindRuntime {
 
     this.pi.on("turn_end", async (event, ctx) => {
       this.latestContext = ctx;
-      if (!shouldEvaluateHeartbeat(event.toolResults)) {
+      const toolResults = event.toolResults ?? [];
+      const executedTools = extractToolNames(toolResults);
+      if (
+        !shouldEvaluateHeartbeat(
+          executedTools,
+          this.configStore.current.heartbeatTools,
+        )
+      ) {
         this.record("heartbeat-skipped", {
-          reason: "no-tool-activity",
+          reason:
+            executedTools.size === 0 ? "no-tool-activity" : "tool-filtered",
           modelCalls: this.modelCalls,
         });
         return;
       }
-      await this.onHeartbeat(ctx);
+      await this.onHeartbeat(ctx, executedTools);
     });
 
     this.pi.on("agent_end", (event, ctx) => {
@@ -272,7 +281,10 @@ export class ShadowMindRuntime {
     );
   }
 
-  private async onHeartbeat(ctx: ExtensionContext): Promise<void> {
+  private async onHeartbeat(
+    ctx: ExtensionContext,
+    executedTools?: ReadonlySet<string>,
+  ): Promise<void> {
     const snapshot = await this.refresh(ctx);
     if (this.paused || !ctx.model) {
       this.record("heartbeat-skipped", {
@@ -294,6 +306,7 @@ export class ShadowMindRuntime {
       ),
       mainModelId: fullModelId,
       random: this.random,
+      executedTools,
     });
     this.record("heartbeat", {
       modelCalls: this.modelCalls,
@@ -308,6 +321,9 @@ export class ShadowMindRuntime {
         : {}),
       ...(decision.runningExcluded.length
         ? { runningExcluded: decision.runningExcluded }
+        : {}),
+      ...(decision.toolFiltered.length
+        ? { toolFiltered: decision.toolFiltered }
         : {}),
     });
     if (!decision.activated.length) return;
